@@ -41,7 +41,10 @@ h1{font-family:'Space Grotesk',sans-serif;font-size:26px;margin:2px 0 0;font-wei
 .pep-cell{display:flex;gap:8px;align-items:center;padding:12px 10px}
 .pep-cell .name{font-weight:600;font-size:14px}
 .pep-cell .sub{font-size:12px;color:#5C6B6D}
-.dose-cell{display:flex;justify-content:center;padding:10px 0}
+.dose-cell{display:flex;flex-direction:column;align-items:center;gap:3px;padding:8px 0}
+.amt{border:none;background:transparent;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;color:#4A5A5C;padding:1px 5px;border-radius:6px;text-decoration:underline dotted;text-underline-offset:2px}
+.grid-note{font-size:12px;color:#5C6B6D;margin:-6px 0 14px;text-align:center}
+.dose-edit{border:none;background:transparent;padding:0;text-align:left;text-decoration:underline dotted;text-underline-offset:2px;display:block}
 .cap{width:30px;height:30px;border-radius:50%;border:2px solid #B9C4C4;background:#FFF;color:transparent;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;transition:background .15s,border-color .15s}
 .off-day{color:#C9D2CF;font-size:18px}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;flex-shrink:0;vertical-align:baseline}
@@ -88,12 +91,26 @@ const PROFILES=[{id:'victor',label:'Victor',accent:'#177E89'},{id:'jen',label:'J
 const emptyProfile=()=>({peptides:[],logs:{},weights:[],calc:{vialMg:'',bacMl:'',dose:'',doseUnit:'mcg'}});
 const emptyState=()=>({active:'victor',updatedAt:0,profiles:{victor:emptyProfile(),jen:emptyProfile()}});
 
+function migrateLogs(profile){
+  // Older versions stored logs[date][pepId]=true. Now we store the actual
+  // amount taken that day, so doses can vary week to week.
+  for(const iso of Object.keys(profile.logs||{})){
+    for(const pid of Object.keys(profile.logs[iso])){
+      const v=profile.logs[iso][pid];
+      if(v===true){
+        const p=(profile.peptides||[]).find(x=>x.id===pid);
+        profile.logs[iso][pid]=p?p.dose:1;
+      }
+    }
+  }
+}
 function normalize(raw){
   if(!raw)return emptyState();
   if(raw.profiles&&raw.active){
     PROFILES.forEach(p=>{
       if(!raw.profiles[p.id])raw.profiles[p.id]=emptyProfile();
       if(!raw.profiles[p.id].calc)raw.profiles[p.id].calc={vialMg:'',bacMl:'',dose:'',doseUnit:'mcg'};
+      migrateLogs(raw.profiles[p.id]);
     });
     if(!raw.updatedAt)raw.updatedAt=0;
     return raw;
@@ -264,6 +281,7 @@ function weekView(){
   const dates=DAYS.map((_,i)=>addDays(start,i));
   const todayISO=fmtISO(new Date());
   const label=dates[0].toLocaleDateString('en-US',{month:'short',day:'numeric'})+' \u2013 '+dates[6].toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  const weekKey=fmtISO(start);
   return `
     <div class="week-nav">
       <button class="nav-btn" onclick="shiftWeek(-1)" aria-label="Previous week">\u2039</button>
@@ -277,28 +295,33 @@ function weekView(){
         ${dates.map((dt,i)=>`<div class="day-head ${fmtISO(dt)===todayISO?'today':''}" ${fmtISO(dt)===todayISO?`style="color:${acc}"`:''}><div>${DAYS[i]}</div><div class="num">${dt.getDate()}</div></div>`).join('')}
       </div>
       ${d.peptides.map(p=>{
-        const taken=dates.filter(dt=>d.logs[fmtISO(dt)]&&d.logs[fmtISO(dt)][p.id]).length;
+        const taken=dates.filter(dt=>d.logs[fmtISO(dt)]&&d.logs[fmtISO(dt)][p.id]!==undefined).length;
         return `<div class="grid-row">
           <div class="pep-cell"><span class="dot" style="background:${p.color}"></span>
-            <div><div class="name">${esc(p.name)}</div><div class="sub">${p.dose} ${p.unit} \u00B7 ${taken}/${p.days.length} this week</div></div>
+            <div><div class="name">${esc(p.name)}</div><button class="sub dose-edit" onclick="editWeekDose('${p.id}','${weekKey}')" aria-label="Change ${esc(p.name)} dose for this week">${fmtNum(effDose(p,weekKey))} ${p.unit} this week ${p.weekDoses&&p.weekDoses[weekKey]!==undefined?'(adjusted)':''} \u270E</button><div class="sub">${taken}/${p.days.length} logged</div></div>
           </div>
           ${dates.map((dt,i)=>{
             const iso=fmtISO(dt);
             if(!p.days.includes(i))return `<div class="dose-cell"><span class="off-day">\u00B7</span></div>`;
-            const on=!!(d.logs[iso]&&d.logs[iso][p.id]);
-            return `<div class="dose-cell"><button class="cap" aria-label="${esc(p.name)} on ${DAYS[i]} ${iso}: ${on?'taken':'not taken'}"
+            const amt=d.logs[iso]?d.logs[iso][p.id]:undefined;
+            const on=amt!==undefined;
+            return `<div class="dose-cell"><button class="cap" aria-label="${esc(p.name)} on ${DAYS[i]} ${iso}: ${on?'taken, '+amt+' '+p.unit:'not taken'}"
               style="${on?`background:${p.color};border-color:${p.color};color:#FFF`:''}"
-              onclick="toggleDose('${p.id}','${iso}')">\u2713</button></div>`;
+              onclick="toggleDose('${p.id}','${iso}')">\u2713</button>${on?`<button class="amt" onclick="editAmt('${p.id}','${iso}')" aria-label="Change amount for ${DAYS[i]}">${fmtNum(amt)}</button>`:''}</div>`;
           }).join('')}
         </div>`;
       }).join('')}
     </div>
+    <div class="grid-note">Tap a peptide's dose to change it for the week shown \u00B7 tap a circle to log \u00B7 tap the small number to adjust one day.</div>
     <div class="card">
-      <div class="card-label">Weekly totals (taken / scheduled)</div>
+      <div class="card-label">Weekly totals (taken / planned)</div>
       ${d.peptides.map(p=>{
-        const taken=dates.filter(dt=>d.logs[fmtISO(dt)]&&d.logs[fmtISO(dt)][p.id]).length;
+        const takenSum=dates.reduce((s,dt)=>{
+          const v=d.logs[fmtISO(dt)]?d.logs[fmtISO(dt)][p.id]:undefined;
+          return s+(v!==undefined?v:0);
+        },0);
         return `<div class="row"><span><span class="dot" style="background:${p.color}"></span>${esc(p.name)}</span>
-          <span class="mono">${(p.dose*taken).toLocaleString()} / ${(p.dose*p.days.length).toLocaleString()} ${p.unit}</span></div>`;
+          <span class="mono">${fmtNum(takenSum)} / ${fmtNum(effDose(p,weekKey)*p.days.length)} ${p.unit}</span></div>`;
       }).join('')}
     </div>`;
 }
@@ -488,11 +511,52 @@ function pepView(){
 function switchProfile(id){state.active=id;save();render();}
 function setTab(t){ui.tab=t;render();}
 function shiftWeek(n){ui.weekOffset=n===0?0:ui.weekOffset+n;render();}
+const fmtNum=v=>Number(v).toLocaleString('en-US',{maximumFractionDigits:3});
+function weekKeyFromISO(iso){
+  const[y,m,d]=iso.split('-').map(Number);
+  return fmtISO(mondayOf(new Date(y,m-1,d)));
+}
+function effDose(p,weekKey){
+  if(p.weekDoses&&p.weekDoses[weekKey]!==undefined)return p.weekDoses[weekKey];
+  return p.dose;
+}
 function toggleDose(pid,iso){
   const d=data();
   const day={...(d.logs[iso]||{})};
-  if(day[pid])delete day[pid];else day[pid]=true;
+  if(day[pid]!==undefined){delete day[pid];}
+  else{
+    const p=d.peptides.find(x=>x.id===pid);
+    day[pid]=p?effDose(p,weekKeyFromISO(iso)):1;
+  }
   if(Object.keys(day).length)d.logs[iso]=day;else delete d.logs[iso];
+  save();render();
+}
+function editWeekDose(pid,weekKey){
+  const d=data();
+  const p=d.peptides.find(x=>x.id===pid);
+  if(!p)return;
+  const cur=effDose(p,weekKey);
+  const v=prompt(esc(p.name)+' dose for the week of '+pretty(weekKey)+' ('+p.unit+'):',cur);
+  if(v===null)return;
+  const n=parseFloat(v);
+  if(!Number.isFinite(n)||n<=0){alert('Enter a number greater than 0.');return;}
+  if(!p.weekDoses)p.weekDoses={};
+  p.weekDoses[weekKey]=n;
+  if(confirm('Also make '+fmtNum(n)+' '+p.unit+' the new default for future weeks?')){
+    p.dose=n;
+  }
+  save();render();
+}
+function editAmt(pid,iso){
+  const d=data();
+  const p=d.peptides.find(x=>x.id===pid);
+  if(!p||!d.logs[iso]||d.logs[iso][pid]===undefined)return;
+  const cur=d.logs[iso][pid];
+  const v=prompt('Amount taken on '+pretty(iso)+' ('+p.unit+'):',cur);
+  if(v===null)return;
+  const n=parseFloat(v);
+  if(!Number.isFinite(n)||n<=0){alert('Enter a number greater than 0.');return;}
+  d.logs[iso][pid]=n;
   save();render();
 }
 function addWeight(){
